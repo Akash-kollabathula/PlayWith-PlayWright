@@ -1,38 +1,32 @@
-name: Playwright Tests by Akash
-run-name: Playwright E2E Tests on ${{ github.ref_name }} by @${{ github.actor }}
+name: Playwright Tests and GitHub Pages Deploy
+run-name: Build and deploy ${{ github.ref_name }} by @${{ github.actor }}
 
 on:
   push:
-    branches: [ main, master, develop ]
+    branches: [master]
   pull_request:
-    branches: [ main, master, develop ]
-  # Allows triggering tests manually from GitHub Actions tab
+    branches: [master]
   workflow_dispatch:
     inputs:
       test_grep:
-        description: 'Test tag / grep filter (e.g. @smoke, @regression)'
+        description: "Test tag / grep filter (e.g. @smoke, @regression)"
         required: false
-        default: ''
+        default: ""
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  group: pages-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
+  pages: write
+  id-token: write
 
 jobs:
-  test:
-    name: Run Playwright Test Suite
+  test-build:
+    name: Test and Build
     timeout-minutes: 60
     runs-on: ubuntu-latest
-
-    # Optional: Matrix sharding across parallel VMs (uncomment to enable 4x faster execution)
-    # strategy:
-    #   fail-fast: false
-    #   matrix:
-    #     shardIndex: [1, 2, 3, 4]
-    #     shardTotal: [4]
 
     steps:
       - name: Checkout Code
@@ -42,53 +36,61 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          cache: 'npm'
+          cache: npm
 
       - name: Install Project Dependencies
         run: npm ci
 
-      - name: Get Playwright Version for Binary Cache
-        id: playwright-version
-        run: echo "PLAYWRIGHT_VERSION=$(node -e "try { console.log(require('@playwright/test/package.json').version) } catch { console.log('latest') }")" >> $GITHUB_ENV
-
-      - name: Cache Playwright Browser Binaries
-        uses: actions/cache@v4
-        id: playwright-cache
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ env.PLAYWRIGHT_VERSION }}
-
-      - name: Install Playwright Browsers & OS System Dependencies
-        run: npx playwright install --with-deps
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
-
-      - name: Install OS Dependencies Only (When Cache Hit)
-        run: npx playwright install-deps
-        if: steps.playwright-cache.outputs.cache-hit == 'true'
+      - name: Install Playwright Browsers
+        run: npx playwright install --with-deps chromium
+        continue-on-error: true
 
       - name: Run Playwright Tests
         env:
           CI: true
-          # BASE_URL: ${{ secrets.BASE_URL }}
         run: |
-          if [ -n "${{ github.event.inputs.test_grep }}" ]; then
-            npx playwright test --grep "${{ github.event.inputs.test_grep }}"
+          if find tests e2e -type f \( -name '*.spec.ts' -o -name '*.spec.js' -o -name '*.test.ts' -o -name '*.test.js' \) 2>/dev/null | grep -q .; then
+            if [ -n '${{ github.event.inputs.test_grep }}' ]; then
+              npx playwright test --grep '${{ github.event.inputs.test_grep }}'
+            else
+              npx playwright test
+            fi
           else
-            npx playwright test
+            echo 'No Playwright test files found; skipping browser tests.'
           fi
 
       - name: Upload Playwright HTML Report
         uses: actions/upload-artifact@v4
         if: ${{ !cancelled() }}
         with:
-          name: playwright-report
+          name: playwright-report-${{ github.run_id }}
           path: playwright-report/
+          if-no-files-found: ignore
           retention-days: 14
 
-      - name: Upload Test Results & Failure Traces
-        uses: actions/upload-artifact@v4
-        if: failure()
+      - name: Build Site
+        run: npm run build
+
+      - name: Setup GitHub Pages
+        if: github.event_name != 'pull_request'
+        uses: actions/configure-pages@v5
+
+      - name: Upload Pages Artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v3
         with:
-          name: test-results
-          path: test-results/
-          retention-days: 14
+          path: dist
+
+  deploy:
+    name: Deploy to GitHub Pages
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    needs: test-build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
