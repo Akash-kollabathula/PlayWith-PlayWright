@@ -1,0 +1,94 @@
+name: Playwright Tests by Akash
+run-name: Playwright E2E Tests on ${{ github.ref_name }} by @${{ github.actor }}
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+  # Allows triggering tests manually from GitHub Actions tab
+  workflow_dispatch:
+    inputs:
+      test_grep:
+        description: 'Test tag / grep filter (e.g. @smoke, @regression)'
+        required: false
+        default: ''
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Run Playwright Test Suite
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+
+    # Optional: Matrix sharding across parallel VMs (uncomment to enable 4x faster execution)
+    # strategy:
+    #   fail-fast: false
+    #   matrix:
+    #     shardIndex: [1, 2, 3, 4]
+    #     shardTotal: [4]
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Install Project Dependencies
+        run: npm ci
+
+      - name: Get Playwright Version for Binary Cache
+        id: playwright-version
+        run: echo "PLAYWRIGHT_VERSION=$(node -e "try { console.log(require('@playwright/test/package.json').version) } catch { console.log('latest') }")" >> $GITHUB_ENV
+
+      - name: Cache Playwright Browser Binaries
+        uses: actions/cache@v4
+        id: playwright-cache
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ env.PLAYWRIGHT_VERSION }}
+
+      - name: Install Playwright Browsers & OS System Dependencies
+        run: npx playwright install --with-deps
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+
+      - name: Install OS Dependencies Only (When Cache Hit)
+        run: npx playwright install-deps
+        if: steps.playwright-cache.outputs.cache-hit == 'true'
+
+      - name: Run Playwright Tests
+        env:
+          CI: true
+          # BASE_URL: ${{ secrets.BASE_URL }}
+        run: |
+          if [ -n "${{ github.event.inputs.test_grep }}" ]; then
+            npx playwright test --grep "${{ github.event.inputs.test_grep }}"
+          else
+            npx playwright test
+          fi
+
+      - name: Upload Playwright HTML Report
+        uses: actions/upload-artifact@v4
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 14
+
+      - name: Upload Test Results & Failure Traces
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: test-results
+          path: test-results/
+          retention-days: 14

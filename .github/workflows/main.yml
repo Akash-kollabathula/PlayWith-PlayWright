@@ -1,0 +1,106 @@
+
+name: Playwright Tests by Akash
+
+run-name: Playwright E2E Tests on ${{ github.ref_name }} by @${{ github.actor }}
+
+on:
+  push:
+    branches: [main, master, develop]
+
+  pull_request:
+    branches: [main, master, develop]
+
+  workflow_dispatch:
+    inputs:
+      test_grep:
+        description: 'Test tag / grep filter (e.g. @smoke, @regression)'
+        required: false
+        default: ''
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Run Playwright Test Suite
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Install Playwright Browsers
+        run: npx playwright install --with-deps
+
+      - name: Run Playwright Tests
+        id: playwright-tests
+        continue-on-error: true
+        env:
+          CI: true
+        run: |
+          if [ -n "${{ github.event.inputs.test_grep }}" ]; then
+            npx playwright test --grep "${{ github.event.inputs.test_grep }}"
+          else
+            npx playwright test
+          fi
+
+      - name: Upload Playwright HTML Report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Upload Test Results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: test-results
+          path: test-results/
+          retention-days: 14
+          if-no-files-found: ignore
+
+      # Deploy only from main branch, not from pull requests
+      - name: Configure GitHub Pages
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/configure-pages@v5
+
+      - name: Upload Report to GitHub Pages
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: playwright-report/
+
+      - name: Deploy Playwright Report
+        id: deployment
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: actions/deploy-pages@v4
+
+      # Preserve the original test failure status
+      - name: Check Playwright Test Result
+        if: always() && steps.playwright-tests.outcome == 'failure'
+        run: exit 1
